@@ -177,6 +177,7 @@
 
 @protocol SDAVAssetExportSessionDelegate <NSObject>
 
+- (BOOL)exportSession:(SDAVAssetExportSession *)exportSession wantsToRenderFrame:(CMTime)presentationTimestamp;
 - (void)exportSession:(SDAVAssetExportSession *)exportSession renderFrame:(CVPixelBufferRef)pixelBuffer withPresentationTime:(CMTime)presentationTime toBuffer:(CVPixelBufferRef)renderBuffer;
 
 @end

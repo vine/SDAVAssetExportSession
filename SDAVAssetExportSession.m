@@ -18,7 +18,7 @@
 @property (nonatomic, strong) AVAssetWriterInput *videoInput;
 @property (nonatomic, strong) AVAssetWriterInputPixelBufferAdaptor *videoPixelBufferAdaptor;
 @property (nonatomic, strong) AVAssetWriterInput *audioInput;
-@property (nonatomic, strong) dispatch_queue_t inputQueue;
+@property (nonatomic, assign) dispatch_queue_t inputQueue;
 @property (nonatomic, strong) void (^completionHandler)();
 
 @end
@@ -125,14 +125,14 @@
     // Video input
     //
     self.videoInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:self.videoSettings];
-    self.videoInput.expectsMediaDataInRealTime = NO;
+    self.videoInput.expectsMediaDataInRealTime = YES;
     if ([self.writer canAddInput:self.videoInput])
     {
         [self.writer addInput:self.videoInput];
     }
     NSDictionary *pixelBufferAttributes = @
     {
-        (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+        (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
         (id)kCVPixelBufferWidthKey: @(renderSize.width),
         (id)kCVPixelBufferHeightKey: @(renderSize.height),
         @"IOSurfaceOpenGLESTextureCompatibility": @YES,
@@ -156,7 +156,7 @@
     // Audio input
     //
     self.audioInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeAudio outputSettings:self.audioSettings];
-    self.audioInput.expectsMediaDataInRealTime = NO;
+    self.audioInput.expectsMediaDataInRealTime = YES;
     if ([self.writer canAddInput:self.audioInput])
     {
         [self.writer addInput:self.audioInput];
@@ -164,7 +164,9 @@
 
     [self.writer startWriting];
     [self.reader startReading];
-    [self.writer startSessionAtSourceTime:CMTimeMake(0, ((AVAssetTrack *)videoTracks[0]).naturalTimeScale)];
+    int timeScale = ((AVAssetTrack *)videoTracks[0]).naturalTimeScale;
+    timeScale = timeScale ? timeScale : 600;
+    [self.writer startSessionAtSourceTime:CMTimeMake(0, timeScale)];
 
     self.inputQueue = dispatch_queue_create("VideoEncoderInputQueue", DISPATCH_QUEUE_SERIAL);
     __block BOOL videoCompleted = NO;
@@ -221,7 +223,7 @@
                 lastSamplePresentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
                 self.progress = duration == 0 ? 1 : CMTimeGetSeconds(lastSamplePresentationTime) / duration;
 
-                if ([self.delegate respondsToSelector:@selector(exportSession:renderFrame:withPresentationTime:toBuffer:)])
+                if ([self.delegate respondsToSelector:@selector(exportSession:renderFrame:withPresentationTime:toBuffer:)] && (![self.delegate respondsToSelector:@selector(exportSession:wantsToRenderFrame:)] || [self.delegate exportSession:self wantsToRenderFrame:lastSamplePresentationTime]))
                 {
                     CVPixelBufferRef pixelBuffer = (CVPixelBufferRef)CMSampleBufferGetImageBuffer(sampleBuffer);
                     CVPixelBufferRef renderBuffer = NULL;
@@ -320,10 +322,17 @@
     else
     {
         [self.writer endSessionAtSourceTime:lastSamplePresentationTime];
-        [self.writer finishWritingWithCompletionHandler:^
-        {
+        if ([self.writer respondsToSelector:@selector(finishWritingWithCompletionHandler:)]) {
+            [self.writer finishWritingWithCompletionHandler:^
+            {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self complete];
+                });
+            }];
+        } else {
+            [self.writer finishWriting];
             [self complete];
-        }];
+        }
     }
 }
 
@@ -377,8 +386,12 @@
     {
         dispatch_async(self.inputQueue, ^
         {
-            [self.writer cancelWriting];
-            [self.reader cancelReading];
+            if (self.writer.status == AVAssetWriterStatusWriting) {
+                [self.writer cancelWriting];
+            }
+            if (self.reader.status == AVAssetReaderStatusReading) {
+                [self.reader cancelReading];
+            }
             [self complete];
             [self reset];
         });
